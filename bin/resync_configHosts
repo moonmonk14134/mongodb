@@ -1,0 +1,11 @@
+#!/bin/bash
+
+#### rsync -avr --exclude-from=/home/mongod/admin/mongodb.key  /home/mongod/admin/ 10.128.44.14:/home/mongod/admin/
+rsync -avr --exclude-from=/home/mongod/admin/mongodb.key  /home/mongod/admin/ 10.128.45.14:/home/mongod/admin/
+rsync -avr --exclude-from=/home/mongod/admin/mongodb.key  /home/mongod/admin/ 10.128.46.14:/home/mongod/admin/
+
+#### rsync -avr --delete /home/mongod/jira/ 10.128.44.14:/home/mongod/admin/
+rsync -avr /home/mongod/jira/ 10.128.45.14:/home/mongod/jira/
+rsync -avr /home/mongod/jira/ 10.128.46.14:/home/mongod/jira/
+/
+

@@ -1,0 +1,112 @@
+#############################################################################
+##  mongo_snap_backup.sh
+##         Purpose : take snapshots on config server and sharding db servers.
+##         Syntax: 
+##                   mongo_snap_backup.sh cluster_name bk_vol.lst  
+##                   EX.
+##                      $> mongo_snap_backup.sh MongoDB-nonprod-ICP-401q /home/mongod/admin/bin/bk_vol.lst
+##         Date:     2017/08/07
+##         Version:  1.0.1
+##         
+##         Date:     2017/08/16
+##         Version:  1.0.2
+##                   Rename: mongo_snap_backup.sh
+##                   remove S3 option
+##############################################################################
+#!/bin/sh
+##set -x
+
+if [[ -z $1  ]] ; then
+    echo backup_sh_snap.sh cluster_name  bk_vol.lst
+    exit 1
+fi
+
+PROJ=$1 
+VList=${2:-/home/mongod/admin/bin/bk_vol.lst}
+PW=`cat /home/mongod/control/.passwd | cut -d ':' -f2`
+MongoPem=`ls /etc/ssl/mg* |cut -d'/' -f4 `
+
+
+## EVN
+. ~/.bashrc
+Date=`date '+%Y%m%d_%H%M%S'`
+LOG=/home/mongod/admin/log/${0##*/}.$Date.out
+TFILE=/tmp/tmp1
+cat /dev/null >$TFILE
+touch $TFILE 
+
+## Check Balancer Status
+## No need to stop mongodb balancer ; Balancer window : 1am~23:59pm
+echo =========================== >>$LOG 
+echo Check Balancer Status       >>$LOG
+echo =========================== >>$LOG
+echo >>$LOG
+mongo --ssl --sslAllowInvalidCertificates --host ip-10-128-44-14.portal.webmd.com:27018  --sslPEMKeyFile=/etc/ssl/$MongoPem --sslCAFile=/etc/ssl/rootCA.pem  -u sa -p $PW  --authenticationDatabase "admin"  <<EOF>>$LOG
+use config ;
+sh.status();
+EOF
+
+####  sh.stopBalancer(timeout, interval)  , in case you need to stop Balancer manually .
+echo the status of balancer shall be stop >>$LOG
+
+
+
+## Backup config server
+DBSerLst=`grep 'db' $VList |cut -d" " -f2- ` 
+echo ======================================== >>$LOG 
+echo Start Snapshot backup at `date`          >>$LOG
+echo ======================================== >>$LOG
+echo >>$LOG
+
+for Vol in $DBSerLst ; do
+   #### echo ec2-create-snapshot --O $AAK --W $ASK -d "bk snap ${PROJ} ${Date} ${Vol}"  $Vol >>$LOG 
+   #### ec2-create-snapshot --O $AAK --W $ASK -d "bk snap $PROJ $Date $Vol"  $Vol >>$LOG
+   echo ec2-create-snapshot -d "bk snap ${PROJ} ${Date} ${Vol}"  $Vol >>$LOG 
+   ec2-create-snapshot -d "bk snap $PROJ $Date $Vol"  $Vol >>$LOG
+done
+  
+
+## backup sharding DB servers
+DBSerLst=`grep 'config' $VList |cut -d" " -f2- `  
+for Vol in $DBSerLst ; do
+   #### echo ec2-create-snapshot --O $AAK --W $ASK -d "bk snap ${PROJ} ${Date} ${Vol}"  $Vol >>$LOG
+   #### ec2-create-snapshot --O $AAK --W $ASK -d "bk snap $PROJ $Date $Vol"  $Vol  >>$LOG
+   echo ec2-create-snapshot -d "bk snap ${PROJ} ${Date} ${Vol}"  $Vol >>$LOG
+   ec2-create-snapshot -d "bk snap $PROJ $Date $Vol"  $Vol  >>$LOG
+done
+
+## Start mongodb balancer
+echo ================================================================================= >> $LOG
+echo ec2-describe-snapshots --O $AAK --W $ASK --filter "description=bk snap ${PROJ} ${Date} ${Vol}" >> $LOG
+echo ================================================================================= >> $LOG
+echo >>$LOG
+#### ec2-describe-snapshots --O $AAK --W $ASK --filter "description=bk snap ${PROJ} ${Date}*" |tee $TFILE  
+ec2-describe-snapshots --filter "description=bk snap ${PROJ} ${Date}*" |tee $TFILE  
+SStatus=`grep pending $TFILE` 
+echo $SStatus >> $LOG
+
+while [[ ! -z $SStatus ]] ; do
+  echo ........... `/bin/date` >> $LOG
+  sleep 1m
+  cat /dev/null > $TFILE
+  #### ec2-describe-snapshots --O $AAK --W $ASK --filter "description=bk snap ${PROJ} ${Date}*" |grep pending |tee $TFILE
+  ec2-describe-snapshots --filter "description=bk snap ${PROJ} ${Date}*" |grep pending |tee $TFILE
+  SStatus=`grep pending $TFILE` 
+done      
+  
+
+## No need to start mongodb balancer ; Balancer window : 1am~23:59pm
+echo =========================== >>$LOG 
+echo Check Balancer Status       >>$LOG
+echo =========================== >>$LOG
+echo >>$LOG
+mongo --ssl --sslAllowInvalidCertificates --host ip-10-128-44-14.portal.webmd.com:27018  --sslPEMKeyFile=/etc/ssl/$MongoPem --sslCAFile=/etc/ssl/rootCA.pem  -u sa -p $PW  --authenticationDatabase "admin"  <<EOF>>$LOG
+use config ;
+sh.status();
+EOF
+
+#### sh.startBalancer(timeout, interval)  , in case you need to start Balancer manually 
+
+#### rm -rf $TFILE
+echo Snapshot backup ends at `date`  >> $LOG
+

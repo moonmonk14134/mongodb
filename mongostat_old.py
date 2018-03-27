@@ -1,0 +1,191 @@
+#!/usr/bin/python
+#
+# script to probe mongodb and get stats and report them on the command line like iostat
+# 2010 Kenny Gorman
+# v.04b
+# requires: pymongo
+#
+
+import datetime, os, time, sys, random
+import pymongo
+from pymongo import Connection
+from optparse import OptionParser
+import commands
+import signal
+from urlparse import urlparse
+
+class MongoStat:
+    
+    def __init__(self):
+
+        # get command line input
+        parser = OptionParser()
+        parser.set_defaults(database="test",hostname="localhost",port="27017")
+        parser.add_option("--hostname", dest="hostname",help="hostname to connect to")
+        parser.add_option("--port",dest="port",type=int,help="port to connect to")
+        (options, args) = parser.parse_args()
+
+        db_address = None
+        if len(args) > 0:
+            db_address = args[0]
+
+        if db_address:
+            (hosts, database, username, password) = self._parse_uri(db_address)
+            if len(hosts) == 2:
+                connection = Connection.paired(*hosts)
+            else:
+                connection = Connection(*hosts[0])
+        else:
+            connection = Connection(options.hostname, options.port, slave_okay=True)
+
+        self.db = connection.database
+
+        self.setSignalHandler()
+        self.printStats()
+
+    def __partition(self, source, sub):
+        i = source.find(sub)
+        if i == -1:
+            return (source, None)
+        return (source[:i], source[i+len(sub):])
+
+    def _parse_uri(self, uri):
+        info = {}
+ 
+        if uri.startswith("mongodb://"):
+            uri = uri[len("mongodb://"):]
+        elif "://" in uri:
+            raise Exception("Invalid uri scheme: %s" % self.__partition(uri, "://")[0])
+ 
+        (hosts, database) = self.__partition(uri, "/")
+ 
+        if not database:
+            database = None
+ 
+        username = None
+        password = None
+        if "@" in hosts:
+            (auth, hosts) = self.__partition(hosts, "@")
+ 
+            if ":" not in auth:
+                raise Exception("auth must be specified as 'username:password@'")
+            (username, password) = self.__partition(auth, ":")
+ 
+        host_list = []
+        for host in hosts.split(","):
+            if not host:
+                raise Exception("empty host (or extra comma in host list)")
+            (hostname, port) = self.__partition(host, ":")
+            if port:
+                port = int(port)
+            else:
+                port = 27017
+            host_list.append((hostname, port))
+ 
+        return (host_list, database, username, password)
+
+
+    # get the load avg.  needs to be mucked for platforms other than linux
+    def getload(self):
+      if (sys.platform == 'linux2'):
+        cmd = "cat /proc/loadavg"
+        out = commands.getstatusoutput(cmd)
+        load = out[1].split()[0]
+      else:
+        load = 0
+      return load
+
+
+    def thetime(self):
+      return datetime.datetime.now().strftime("%d-%m-%Y.%H:%M:%S")
+
+    def hostname(self):
+      hostname = commands.getstatusoutput('hostname')
+      return hostname[1][0:12]
+
+    def getVersion(self):
+        return self.db.version()
+
+    def setSignalHandler(self):
+        def handler(signal, frame):
+            print "Goodbye!"
+            sys.exit()
+
+        signal.signal(signal.SIGINT, handler)
+
+    def printStats(self):
+        
+        data = []
+        sleep = 10
+        q = 0
+        i = 0
+        u = 0
+        d = 0
+        ii = 0
+        con = 0
+        lok = 0
+        hostname = self.hostname()
+        idx_b_a = 0
+        idx_b_h = 0
+        idx_b_m = 0
+
+        # just run forever until ctrl-c
+        while True:
+            
+            # set previous values before overwriting
+            pq = q
+            pi = i
+            pu = u
+            pd = d
+            pidx_b_a = idx_b_a
+            pidx_b_h = idx_b_h
+            pidx_b_m = idx_b_m
+            
+            # fetch the stats
+            data = ( self.db.command( { "serverStatus" : 1 } ) )
+
+            lok = round(float(data['globalLock']['ratio']),2)
+            res = int(data['mem']['resident'])
+            vir = int(data['mem']['virtual'])
+            mapd = int(data['mem']['mapped'])
+
+            template="%12s%22s%12s%12s%12s%12s%12s"
+            header=('hostname', 'time', 'lock ratio', 'resident','virtual', 'mapped', 'load')
+            datastr="hostname, self.thetime(), lok, res, vir, mapd, self.getload()"
+
+            if "opcounters" in data:
+                q = int(data['opcounters']['query'])
+                i = int(data['opcounters']['insert'])
+                u = int(data['opcounters']['update'])
+                d = int(data['opcounters']['delete'])
+                con = int(data['connections']['current'])
+              
+                template="%12s%22s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s"
+                header=('hostname', 'time', 'query', 'insert', 'update',  \
+                        'delete', 'active con', 'lock ratio', 'resident', \
+                        'virtual','mapped','load')
+                datastr="hostname, self.thetime(), (q-pq)/sleep, (i-pi)/sleep,(u-pu)/sleep, (d-pd)/sleep, con, lok, res, vir, mapd, self.getload()"
+      
+            # opcounters will be in data if indexcounters is
+            if "indexCounters" in data:
+                idx_b_a = int(data['indexCounters']['btree']['accesses'])
+                idx_b_h = int(data['indexCounters']['btree']['hits'])
+                idx_b_m = int(data['indexCounters']['btree']['misses'])
+                idx_b_o = round(float(data['indexCounters']['btree']['missRatio']),2)
+                template="%12s%22s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s%12s"
+                header=('hostname', 'time', 'query', 'insert', 'update',  \
+                        'delete', 'active con', 'lock ratio', 'resident', \
+                        'virtual','mapped','idx acc','idx hit','idx miss','idx ratio','load')
+                datastr="hostname, self.thetime(), (q-pq)/sleep, (i-pi)/sleep,(u-pu)/sleep, (d-pd)/sleep, \
+                         con, lok, res, vir, mapd, (idx_b_a-pidx_b_a)/sleep, (idx_b_h-pidx_b_h)/sleep, (idx_b_m-pidx_b_m)/sleep, idx_b_o, self.getload()"
+	            
+            if (ii % 25 == 0):
+	            print template % header
+            print template % (eval(datastr))
+           
+            ii += 1
+            
+            time.sleep(sleep)
+
+if __name__ == "__main__":
+    MongoStat()
